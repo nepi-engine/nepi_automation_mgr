@@ -26,8 +26,8 @@ from num_sdk_msgs.srv import (
     GetSystemStatsQueryResponse,
 )
 
-AUTOMATION_DIR = "/media/sf_Shared/Numurus/nepi_scripts"
-CONFIG_FILE = "/media/sf_Shared/Numurus/nepi_config/config.yaml"
+AUTOMATION_DIR = "/home/numurus/nepi_scripts"
+CONFIG_FILE = "/home/numurus/nepi_config/config.yaml"
 
 #pdb.set_trace()
 
@@ -82,7 +82,7 @@ class AutomationManager:
         with open(CONFIG_FILE, "w") as f:
             yaml.dump(self.config, f)
 
-    def handle_get_scripts(self):
+    def handle_get_scripts(self, req):
         """
         Handle a request to get the list of available automation scripts.
         """
@@ -109,7 +109,7 @@ class AutomationManager:
             if req.script not in self.config or self.config[req.script]:
                 try:
                     process = subprocess.Popen([os.path.join(AUTOMATION_DIR, req.script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    self.processes[req.script] = process
+                    self.processes[req.script] = {'process': process, 'pid': process.pid}
                     rospy.loginfo("%s: running" % req.script)
                     return LaunchScriptResponse(True)
 
@@ -129,7 +129,7 @@ class AutomationManager:
         """
         if req.script in self.processes:
             try:
-                process = self.processes[req.script]
+                process = self.processes[req.script]['process']
                 process.terminate()
                 process.wait()
                 del self.processes[req.script]
@@ -162,16 +162,16 @@ class AutomationManager:
             for script in self.scripts:
                 if script in self.processes:
                     process = self.processes[script]
-                    if process.poll() is not None:
+                    if process['process'].poll() is not None:
                         del self.processes[script]
-                        if process.returncode == 0:
+                        if process['process'].returncode == 0:
                             rospy.loginfo("%s: completed" % script)
                         else:
                             traceback_str = "".join(traceback.format_exception_only(type(process.returncode), process.returncode))
                             rospy.logwarn("%s: error (%s)" % (script, traceback_str.strip()))
                     else:
                         try:
-                            stdout, stderr = process.communicate()
+                            stdout, stderr = process['process'].communicate()
                             if stdout:
                                 rospy.loginfo("%s stdout: %s" % (script, stdout.strip().decode()))
                             if stderr:
