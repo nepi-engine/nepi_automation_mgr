@@ -6,9 +6,7 @@ import threading
 import traceback
 import yaml
 import resource
-
-import pdb
-
+import time
 
 import rospy
 from std_msgs.msg import String
@@ -26,16 +24,16 @@ from num_sdk_msgs.srv import (
     GetSystemStatsQueryResponse,
 )
 
+
 AUTOMATION_DIR = "/home/numurus/nepi_scripts"
 CONFIG_FILE = "/home/numurus/nepi_config/config.yaml"
-
-#pdb.set_trace()
 
 class AutomationManager:
     def __init__(self):
 
         self.scripts = self.get_scripts()
         self.config = self.load_config()
+        self.file_sizes = self.get_file_sizes()
 
         self.processes = {}
 
@@ -51,16 +49,51 @@ class AutomationManager:
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
 
+        self.watch_thread = threading.Thread(target=self.watch_directory, args=(AUTOMATION_DIR, self.on_new_file))
+        self.watch_thread.daemon = True
+        self.watch_thread.start()
+
+        
     def get_scripts(self):
         """
         Detect and report executable automation scripts that exist in a particular directory in the filesystem.
         """
+        #self.scripts = self.get_scripts()
         scripts = []
+        
         for filename in os.listdir(AUTOMATION_DIR):
             filepath = os.path.join(AUTOMATION_DIR, filename)
             if os.access(filepath, os.X_OK) and not os.path.isdir(filepath):
                 scripts.append(filename)
         return scripts
+
+    def watch_directory(self, directory, callback):
+        files_mtime = {}
+
+        while True:
+            for file in os.listdir(directory):
+                file_path = os.path.join(directory, file)
+                if os.path.isfile(file_path):
+                    current_mtime = os.path.getmtime(file_path)
+                    if file not in files_mtime or files_mtime[file] != current_mtime:
+                        files_mtime[file] = current_mtime
+                        callback(file_path)
+            time.sleep(1)
+
+    def on_new_file(self, file_path):
+        rospy.loginfo("New file detected: %s", file_path)
+        self.scripts = self.get_scripts()
+
+    def get_file_sizes(self):
+        """
+        Get the file sizes of the automation scripts in the specified directory.
+        """
+        file_sizes = {}
+        for filename in self.scripts:
+            filepath = os.path.join(AUTOMATION_DIR, filename)
+            file_size = os.path.getsize(filepath)
+            file_sizes[filename] = file_size
+        return file_sizes
 
     def load_config(self):
         """
@@ -86,9 +119,11 @@ class AutomationManager:
         """
         Handle a request to get the list of available automation scripts.
         """
-        rospy.loginfo(self.scripts)
+        rospy.loginfo("Scripts: %s" % self.scripts)
+        rospy.loginfo("File sizes: %s" % self.file_sizes)
 
         return GetScriptsQueryResponse(self.scripts)
+
 
     def handle_set_script_enabled(self, req):
         """
