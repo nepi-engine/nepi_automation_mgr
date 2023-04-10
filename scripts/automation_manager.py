@@ -13,6 +13,8 @@ from std_msgs.msg import String
 from num_sdk_msgs.srv import (
     GetScriptsQuery,
     GetScriptsQueryResponse,
+    GetRunningScriptsQuery,
+    GetRunningScriptsQueryResponse,
     SetScriptEnabled,
     SetScriptEnabledResponse,
     LaunchScript,
@@ -41,13 +43,15 @@ class AutomationManager:
         for script in self.scripts:
             self.script_counters[script] = {'completed': 0, 'stopped_manually': 0}
 
+        self.running_scripts = set()
+
         self.get_scripts_service = rospy.Service("get_scripts", GetScriptsQuery, self.handle_get_scripts)
+        self.get_running_scripts_service = rospy.Service("get_running_scripts", GetRunningScriptsQuery, self.handle_get_running_scripts)
         self.set_script_enabled_service = rospy.Service("set_script_enabled", SetScriptEnabled, self.handle_set_script_enabled)
         self.launch_script_service = rospy.Service("launch_script", LaunchScript, self.handle_launch_script)
         self.stop_script_service = rospy.Service("stop_script", StopScript, self.handle_stop_script)
         self.get_script_status_service = rospy.Service("get_script_status", GetScriptStatusQuery, self.handle_get_script_status)
         self.get_system_stats_service = rospy.Service("get_system_stats", GetSystemStatsQuery, self.handle_get_system_stats)
-
 
         self.monitor_thread = threading.Thread(target=self.monitor_scripts)
         self.monitor_thread.daemon = True
@@ -127,7 +131,15 @@ class AutomationManager:
         rospy.loginfo("File sizes: %s" % self.file_sizes)
 
         return GetScriptsQueryResponse(self.scripts)
+    
+    def handle_get_running_scripts(self, req):
+        """
+        Handle a request to get a list of currently running scripts.
+        """
+        running_scripts = list(self.running_scripts)
+        rospy.loginfo("Running scripts: %s" % running_scripts)
 
+        return GetRunningScriptsQueryResponse(running_scripts)
 
     def handle_set_script_enabled(self, req):
         """
@@ -143,12 +155,13 @@ class AutomationManager:
     def handle_launch_script(self, req):
         """
         Handle a request to launch an automation script.
-        """
+        """            
         if req.script in self.scripts:
             if req.script not in self.config or self.config[req.script]:
                 try:
                     process = subprocess.Popen([os.path.join(AUTOMATION_DIR, req.script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     self.processes[req.script] = {'process': process, 'pid': process.pid}
+                    self.running_scripts.add(req.script)  # Update the running_scripts set
                     rospy.loginfo("%s: running" % req.script)
                     return LaunchScriptResponse(True)
 
@@ -172,6 +185,7 @@ class AutomationManager:
                 process.terminate()
                 process.wait()
                 del self.processes[req.script]
+                self.running_scripts.remove(req.script)  # Update the running_scripts set
                 rospy.loginfo("%s: stopped" % req.script)
                 self.script_counters[req.script]['stopped_manually'] += 1  # update the counter
                 return True
@@ -204,6 +218,7 @@ class AutomationManager:
                     process = self.processes[script]
                     if process['process'].poll() is not None:
                         del self.processes[script]
+                        self.running_scripts.remove(script)  # Update the running_scripts set
                         if process['process'].returncode == 0:
                             self.script_counters[script]['completed'] += 1
                             rospy.loginfo("%s: completed" % script)
@@ -221,7 +236,7 @@ class AutomationManager:
                             print("Error:", e.returncode, e.output)
                             pass
                 else:
-                    #rospy.loginfo("%s: ready to run" % script)
+                    # rospy.loginfo("%s: ready to run" % script)
                     pass
 
             # Output script counters
@@ -231,23 +246,18 @@ class AutomationManager:
 
             rospy.sleep(1)
 
-
     def handle_get_system_stats(self, req):
         """
         Handle a request to get system stats (CPU usage, memory usage, swap info, and disk usage).
         """
         # Get CPU usage
         self.cpu_percent = (resource.getrusage(resource.RUSAGE_SELF).ru_utime + resource.getrusage(resource.RUSAGE_SELF).ru_stime) / os.sysconf("SC_CLK_TCK")
-        
         # Get memory usage
         self.memory_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        
         # Get swap info
         self.swap_info = resource.getrusage(resource.RUSAGE_SELF).ru_nswap
-        
         # Get disk usage
         self.disk_usage = resource.getrusage(resource.RUSAGE_SELF).ru_oublock
-        
         rospy.loginfo("CPU Percent: %.2f%%, Memory Usage: %d bytes, Swap Info: %d, Disk Usage: %d" % (self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage))
 
         # Return the system stats as a GetSystemStatsQuery response object
