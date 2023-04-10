@@ -37,6 +37,10 @@ class AutomationManager:
 
         self.processes = {}
 
+        self.script_counters = {}
+        for script in self.scripts:
+            self.script_counters[script] = {'completed': 0, 'stopped_manually': 0}
+
         self.get_scripts_service = rospy.Service("get_scripts", GetScriptsQuery, self.handle_get_scripts)
         self.set_script_enabled_service = rospy.Service("set_script_enabled", SetScriptEnabled, self.handle_set_script_enabled)
         self.launch_script_service = rospy.Service("launch_script", LaunchScript, self.handle_launch_script)
@@ -169,6 +173,7 @@ class AutomationManager:
                 process.wait()
                 del self.processes[req.script]
                 rospy.loginfo("%s: stopped" % req.script)
+                self.script_counters[req.script]['stopped_manually'] += 1  # update the counter
                 return True
             except Exception as e:
                 rospy.logwarn("%s: error stopping (%s)" % (req.script, str(e)))
@@ -176,7 +181,7 @@ class AutomationManager:
         else:
             rospy.logwarn("%s: not running" % req.script)
             return False
-        
+    
     def handle_get_script_status(self, req):
         """
         Handle a request to get the status of a script.
@@ -200,6 +205,7 @@ class AutomationManager:
                     if process['process'].poll() is not None:
                         del self.processes[script]
                         if process['process'].returncode == 0:
+                            self.script_counters[script]['completed'] += 1
                             rospy.loginfo("%s: completed" % script)
                         else:
                             traceback_str = "".join(traceback.format_exception_only(type(process.returncode), process.returncode))
@@ -217,7 +223,14 @@ class AutomationManager:
                 else:
                     #rospy.loginfo("%s: ready to run" % script)
                     pass
+
+            # Output script counters
+            rospy.loginfo("Script counters:")
+            for script, counter in self.script_counters.items():
+                rospy.loginfo("%s - completed: %d, stopped manually: %d" % (script, counter['completed'], counter['stopped_manually']))
+
             rospy.sleep(1)
+
 
     def handle_get_system_stats(self, req):
         """
