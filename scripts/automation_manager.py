@@ -247,21 +247,43 @@ class AutomationManager:
             rospy.sleep(1)
 
     def handle_get_system_stats(self, req):
-        """
-        Handle a request to get system stats (CPU usage, memory usage, swap info, and disk usage).
-        """
-        # Get CPU usage
-        self.cpu_percent = (resource.getrusage(resource.RUSAGE_SELF).ru_utime + resource.getrusage(resource.RUSAGE_SELF).ru_stime) / os.sysconf("SC_CLK_TCK")
-        # Get memory usage
-        self.memory_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # Get swap info
-        self.swap_info = resource.getrusage(resource.RUSAGE_SELF).ru_nswap
-        # Get disk usage
-        self.disk_usage = resource.getrusage(resource.RUSAGE_SELF).ru_oublock
-        rospy.loginfo("CPU Percent: %.2f%%, Memory Usage: %d bytes, Swap Info: %d, Disk Usage: %d" % (self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage))
+        script_name = req.script
+        if not script_name or script_name not in self.processes:
+            rospy.logwarn("Script not found or not running: %s" % script_name)
+            return GetSystemStatsQueryResponse(None, None, None, None)
+            
+        # Ensure the script_name has a 'pid' key in the dictionary
+        if 'pid' not in self.processes[script_name]:
+            rospy.logwarn("PID not found for script: %s" % script_name)
+            return GetSystemStatsQueryResponse(None, None, None, None)
 
-        # Return the system stats as a GetSystemStatsQuery response object
-        return GetSystemStatsQueryResponse(self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage)
+        pid = self.processes[script_name]['pid']
+        rospy.loginfo("PID for script %s: %d" % (script_name, pid))
+
+        try:
+            # Get resource usage for the specific PID
+            usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+
+            # Get CPU usage
+            self.cpu_percent = (usage.ru_utime + usage.ru_stime) / os.sysconf("SC_CLK_TCK")
+
+            # Get memory usage
+            self.memory_usage = usage.ru_maxrss
+
+            # Get swap info
+            self.swap_info = usage.ru_nswap
+
+            # Get disk usage
+            self.disk_usage = usage.ru_oublock
+
+            rospy.loginfo("CPU Percent: %.2f%%, Memory Usage: %d bytes, Swap Info: %d, Disk Usage: %d" % (self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage))
+
+            # Return the system stats as a GetSystemStatsQuery response object
+            return GetSystemStatsQueryResponse(self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage)
+
+        except OSError as e:
+            rospy.logwarn("Error processing request: %s" % str(e))
+            return GetSystemStatsQueryResponse(None, None, None, None)
 
 def main():
     rospy.init_node("automation_manager")
