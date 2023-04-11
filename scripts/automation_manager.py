@@ -250,12 +250,16 @@ class AutomationManager:
         script_name = req.script
         if not script_name or script_name not in self.processes:
             rospy.logwarn("Script not found or not running: %s" % script_name)
-            return GetSystemStatsQueryResponse(None, None, None, None)
-            
+            return GetSystemStatsQueryResponse(None, None, None, None, None)  # Add a new None value for the file size
+                
         # Ensure the script_name has a 'pid' key in the dictionary
         if 'pid' not in self.processes[script_name]:
             rospy.logwarn("PID not found for script: %s" % script_name)
-            return GetSystemStatsQueryResponse(None, None, None, None)
+            return GetSystemStatsQueryResponse(None, None, None, None, None)  # Add a new None value for the file size
+
+        # Get file size for the script_name
+        file_size = self.file_sizes[script_name]
+        rospy.loginfo("file_size for script %s: %d" % (script_name, file_size))
 
         pid = self.processes[script_name]['pid']
         rospy.loginfo("PID for script %s: %d" % (script_name, pid))
@@ -279,11 +283,11 @@ class AutomationManager:
             rospy.loginfo("CPU Percent: %.2f%%, Memory Usage: %d bytes, Swap Info: %d, Disk Usage: %d" % (self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage))
 
             # Return the system stats as a GetSystemStatsQuery response object
-            return GetSystemStatsQueryResponse(self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage)
+            return GetSystemStatsQueryResponse(self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage, file_size)  # Add the file_size variable
 
         except OSError as e:
             rospy.logwarn("Error processing request: %s" % str(e))
-            return GetSystemStatsQueryResponse(None, None, None, None)
+            return GetSystemStatsQueryResponse(None, None, None, None, None)  # Add a new None value for the file size
 
 def main():
     rospy.init_node("automation_manager")
