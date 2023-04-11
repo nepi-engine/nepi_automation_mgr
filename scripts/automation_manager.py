@@ -10,7 +10,7 @@ import time
 
 import rospy
 from std_msgs.msg import String
-from num_sdk_msgs.srv import (
+from nepi_ros_interfaces.srv import (
     GetScriptsQuery,
     GetScriptsQueryResponse,
     GetRunningScriptsQuery,
@@ -26,9 +26,8 @@ from num_sdk_msgs.srv import (
     GetSystemStatsQueryResponse,
 )
 
-
-AUTOMATION_DIR = "/home/numurus/nepi_scripts"
-CONFIG_FILE = "/home/numurus/nepi_config/config.yaml"
+AUTOMATION_DIR = "/mnt/nepi_storage/automation_scripts"
+CONFIG_FILE = "/opt/nepi/ros/etc/automation_mgr/automation_mgr.yaml"
 
 class AutomationManager:
     def __init__(self):
@@ -60,7 +59,6 @@ class AutomationManager:
         self.watch_thread = threading.Thread(target=self.watch_directory, args=(AUTOMATION_DIR, self.on_new_file))
         self.watch_thread.daemon = True
         self.watch_thread.start()
-
         
     def get_scripts(self):
         """

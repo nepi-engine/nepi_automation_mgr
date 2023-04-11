@@ -8,10 +8,9 @@ project(nepi_automation_mgr)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  roscpp
   rospy
   std_msgs
-  num_sdk_msgs
+  nepi_ros_interfaces
 )
 
 ## System dependencies are found with CMake's conventions
@@ -106,8 +105,8 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES automation_mgr
-#  CATKIN_DEPENDS roscpp rospy std_msgs
-#  DEPENDS system_lib
+   CATKIN_DEPENDS nepi_ros_interfaces
+#  DEPENDS CATKIN_DEPENDS sensor_msgs nepi_ros_interfaces nepi_edge_sdk_base 
 )
 
 ###########
