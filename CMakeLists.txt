@@ -185,12 +185,11 @@ include_directories(
 #   PATTERN ".svn" EXCLUDE
 # )
 
-## Mark other files for installation (e.g. launch and bag files, etc.)
-# install(FILES
-#   # myfile1
-#   # myfile2
-#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-# )
+# Install etc files (startup scripts, factory configs, etc.) to the global (not project) etc destination
+install(DIRECTORY etc/
+  DESTINATION ${CATKIN_GLOBAL_ETC_DESTINATION}
+  USE_SOURCE_PERMISSIONS
+)
 
 #############
 ## Testing ##
