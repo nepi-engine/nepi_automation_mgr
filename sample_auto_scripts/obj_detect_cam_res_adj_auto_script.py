@@ -66,10 +66,6 @@ def cleanup_actions():
     rospy.loginfo("Restoring to LOW resolution")
     res_adj_pub.publish(LOW_RES_VALUE)
 
-    rospy.loginfo("Stopping object detector")
-    
-    stop_classifier_pub.publish()
-
     # Restore data saving
     rospy.loginfo("Restoring data save setup defaults")
     # First, reenable all data products
@@ -84,6 +80,9 @@ def object_detected_callback(bounding_box_msg):
     # Check for the object of interest and take appropriate actions
     if box.Class == OBJ_LABEL_OF_INTEREST:
       rospy.loginfo("Detected a " + OBJ_LABEL_OF_INTEREST)
+
+      rospy.loginfo("Stopping object detector")
+      stop_classifier_pub.publish()
       
       rospy.loginfo("Increasing camera resolution to ULTRA")
       res_adj_pub.publish(ULTRA_RES_VALUE)
