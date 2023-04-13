@@ -5,8 +5,9 @@ import subprocess
 import threading
 import traceback
 import yaml
-import resource
+#import resource
 import time
+import psutil
 
 import rospy
 from std_msgs.msg import String
@@ -40,7 +41,8 @@ class AutomationManager:
 
         self.script_counters = {}
         for script in self.scripts:
-            self.script_counters[script] = {'completed': 0, 'stopped_manually': 0}
+            #TODO: These should be gathered from a stats file on disk to remain cumulative for all time (clearable on ROS command)
+            self.script_counters[script] = {'started': 0, 'completed': 0, 'stopped_manually': 0, 'errored_out': 0, 'cumulative_run_time': 0.0}
 
         self.running_scripts = set()
 
@@ -87,7 +89,7 @@ class AutomationManager:
             time.sleep(1)
 
     def on_new_file(self, file_path):
-        rospy.loginfo("New file detected: %s", file_path)
+        rospy.loginfo("New file detected: %s", os.path.basename(file_path))
         self.scripts = self.get_scripts()
 
     def get_file_sizes(self):
@@ -125,8 +127,8 @@ class AutomationManager:
         """
         Handle a request to get the list of available automation scripts.
         """
-        rospy.loginfo("Scripts: %s" % self.scripts)
-        rospy.loginfo("File sizes: %s" % self.file_sizes)
+        rospy.logdebug("Scripts: %s" % self.scripts)
+        rospy.logdebug("File sizes: %s" % self.file_sizes)
 
         return GetScriptsQueryResponse(self.scripts)
     
@@ -135,7 +137,7 @@ class AutomationManager:
         Handle a request to get a list of currently running scripts.
         """
         running_scripts = list(self.running_scripts)
-        rospy.loginfo("Running scripts: %s" % running_scripts)
+        #rospy.loginfo("Running scripts: %s" % running_scripts)
 
         return GetRunningScriptsQueryResponse(running_scripts)
 
@@ -158,9 +160,10 @@ class AutomationManager:
             if req.script not in self.config or self.config[req.script]:
                 try:
                     process = subprocess.Popen([os.path.join(AUTOMATION_DIR, req.script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    self.processes[req.script] = {'process': process, 'pid': process.pid}
+                    self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time()}
                     self.running_scripts.add(req.script)  # Update the running_scripts set
                     rospy.loginfo("%s: running" % req.script)
+                    self.script_counters[req.script]['started'] += 1  # update the counter
                     return LaunchScriptResponse(True)
 
                 except Exception as e:
@@ -182,6 +185,7 @@ class AutomationManager:
                 process = self.processes[req.script]['process']
                 process.terminate()
                 process.wait()
+                self.script_counters[req.script]['cumulative_run_time'] += (rospy.Time.now() - rospy.Time.from_sec(self.processes[req.script]['start_time'])).to_sec()
                 del self.processes[req.script]
                 self.running_scripts.remove(req.script)  # Update the running_scripts set
                 rospy.loginfo("%s: stopped" % req.script)
@@ -222,7 +226,11 @@ class AutomationManager:
                             rospy.loginfo("%s: completed" % script)
                         else:
                             traceback_str = "".join(traceback.format_exception_only(type(process.returncode), process.returncode))
+                            self.script_counters[script]['errored_out'] += 1
                             rospy.logwarn("%s: error (%s)" % (script, traceback_str.strip()))
+                                               
+                        # Update the cumulative run time whether exited on success or error
+                        self.script_counters[script]['cumulative_run_time'] += (rospy.Time.now() - rospy.Time.from_sec(process['start_time'])).to_sec()
                     else:
                         try:
                             stdout, stderr = process['process'].communicate()
@@ -238,57 +246,65 @@ class AutomationManager:
                     pass
 
             # Output script counters
-            rospy.loginfo("Script counters:")
+            rospy.logdebug("Script counters:")
             for script, counter in self.script_counters.items():
-                rospy.loginfo("%s - completed: %d, stopped manually: %d" % (script, counter['completed'], counter['stopped_manually']))
+                rospy.logdebug("%s - completed: %d, stopped manually: %d" % (script, counter['completed'], counter['stopped_manually']))
 
             rospy.sleep(1)
 
     def handle_get_system_stats(self, req):
         script_name = req.script
-        if not script_name or script_name not in self.processes:
-            rospy.logwarn("Script not found or not running: %s" % script_name)
-            return GetSystemStatsQueryResponse(None, None, None, None, None, None, None)  # Add new None values for the counters
+        response = GetSystemStatsQueryResponse(cpu_percent=None, memory_percent=None, run_time_s=None,
+                                               cumulative_run_time_s=None, file_size_bytes=None, started_runs=None,
+                                               completed_runs=None, error_runs=None, stopped_manually=None)
 
-        # Ensure the script_name has a 'pid' key in the dictionary
-        if 'pid' not in self.processes[script_name]:
-            rospy.logwarn("PID not found for script: %s" % script_name)
-            return GetSystemStatsQueryResponse(None, None, None, None, None, None, None)  # Add new None values for the counters
+        if not script_name:
+            rospy.logwarn_throttle(10, "Requested script not found: %s" % script_name)
+            return response # Blank response
 
         # Get file size for the script_name
-        file_size = self.file_sizes[script_name]
+        response.file_size_bytes = self.file_sizes[script_name]
 
         # Get the counter values for the script_name
-        completed_runs = self.script_counters[script_name]['completed']
-        stopped_manually = self.script_counters[script_name]['stopped_manually']
+        response.started_runs = self.script_counters[script_name]['started']
+        response.completed_runs = self.script_counters[script_name]['completed']
+        response.error_runs = self.script_counters[script_name]['errored_out']
+        response.stopped_manually = self.script_counters[script_name]['stopped_manually']
+        response.cumulative_run_time_s = self.script_counters[script_name]['cumulative_run_time']
+
+        # Check if the script_name has a 'pid' key in the dictionary to determine whether or not to gather running-script stats
+        if (script_name not in self.processes) or ('pid' not in self.processes[script_name]):
+            return response  # Only includes the 'static' info
 
         pid = self.processes[script_name]['pid']
-        rospy.loginfo("PID for script %s: %d" % (script_name, pid))
+        #rospy.loginfo("PID for script %s: %d" % (script_name, pid))
 
         try:
             # Get resource usage for the specific PID
-            usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+            #usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+            process = psutil.Process(pid)
 
             # Get CPU usage
-            self.cpu_percent = (usage.ru_utime + usage.ru_stime) / os.sysconf("SC_CLK_TCK")
+            #self.cpu_percent = (usage.ru_utime + usage.ru_stime) / os.sysconf("SC_CLK_TCK")
+            response.cpu_percent = process.cpu_percent(0.1)
 
             # Get memory usage
-            self.memory_usage = usage.ru_maxrss
+            #self.memory_usage = usage.ru_maxrss
+            response.memory_percent = 100.0 * float(process.memory_full_info().uss) / float(psutil.virtual_memory().total)
+                        
+            # Get creation/start-up time
+            response.run_time_s = (rospy.Time.now() - rospy.Time.from_sec(process.create_time())).to_sec()
+            # The script_counters cumulative run time only gets updated on script termination, so to keep this value moving in the response,
+            # increment it here.
+            response.cumulative_run_time_s += response.run_time_s
+            #rospy.loginfo("CPU Percent: %.5f%%, Memory Usage: %.5f%%, Run Time: %.2f" % (response.cpu_percent, response.memory_percent, response.run_time_s))
 
-            # Get swap info
-            self.swap_info = usage.ru_nswap
-
-            # Get disk usage
-            self.disk_usage = usage.ru_oublock
-
-            rospy.loginfo("CPU Percent: %.2f%%, Memory Usage: %d bytes, Swap Info: %d, Disk Usage: %d" % (self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage))
-
-            # Return the system stats as a GetSystemStatsQuery response object
-            return GetSystemStatsQueryResponse(self.cpu_percent, self.memory_usage, self.swap_info, self.disk_usage, file_size, completed_runs, stopped_manually)  # Add the counter values
-
-        except OSError as e:
-            rospy.logwarn("Error processing request: %s" % str(e))
-            return GetSystemStatsQueryResponse(None, None, None, None, None, None, None)  # Add new None values for the counters
+        except Exception as e:
+            rospy.logwarn("Error gathering running stats: %s" % str(e))
+            return response  # Add new None values for the counters
+        
+        # Return the system stats as a GetSystemStatsQuery response object
+        return response
 
 def main():
     rospy.init_node("automation_manager")
