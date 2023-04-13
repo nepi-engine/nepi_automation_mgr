@@ -14,18 +14,23 @@ import time
 import sys
 import rospy
 
-from std_msgs.msg import UInt8, Empty, String
-from nepi_ros_interfaces.msg import ClassifierSelection, SaveData, SaveDataRate
+from std_msgs.msg import UInt8, Empty, String, Bool
+from nepi_ros_interfaces.msg import ClassifierSelection, SaveData, SaveDataRate, StringArray
 from darknet_ros_msgs.msg import BoundingBoxes
 
 ######################## SETUP - Edit as Necessary ##################################
 # ROS namespace setup
 BASE_NAMESPACE = "/nepi/s2x_prototype/"
-CAMERA_NAMESPACE = BASE_NAMESPACE + "sidus_ss400/"
+CAMERA_NAME = "sidus_ss400/"
+#print("!!!!! RESTORE SIDUS !!!!!!!!")
+#CAMERA_NAME = "onwote_hd_poe/"
+CAMERA_NAMESPACE = BASE_NAMESPACE + CAMERA_NAME
 
 # Camera topics and parameters
 RESOLUTION_ADJ_TOPIC = CAMERA_NAMESPACE + "idx/set_resolution_mode"
+COLOR_2D_IMG_TOPIC_SHORT = CAMERA_NAME + "idx/color_2d_image"
 COLOR_2D_IMG_TOPIC = CAMERA_NAMESPACE + "idx/color_2d_image"
+
 LOW_RES_VALUE = 0
 ULTRA_RES_VALUE = 3
 
@@ -41,9 +46,16 @@ SAVE_DATA_RATE_TOPIC = CAMERA_NAMESPACE + "save_data_rate"
 SAVE_DATA_PREFIX_TOPIC = CAMERA_NAMESPACE + "save_data_prefix"
 SAVE_DATA_TOPIC = CAMERA_NAMESPACE + "save_data"
 
+# NEPI Link data topics and parameters
+NEPI_LINK_NAMESPACE = BASE_NAMESPACE + "nepi_link_ros_bridge/"
+NEPI_LINK_ENABLE_TOPIC = NEPI_LINK_NAMESPACE + "enable"
+NEPI_LINK_SET_DATA_SOURCES_TOPIC = NEPI_LINK_NAMESPACE + "lb/select_data_sources"
+NEPI_LINK_COLLECT_DATA_TOPIC = NEPI_LINK_NAMESPACE + "lb/create_data_set_now"
+NEPI_LINK_CONNECT_TOPIC = NEPI_LINK_NAMESPACE + "connect_now"
+
 # Parameters for actions upon detection of object of interest
 OBJ_LABEL_OF_INTEREST = "person"
-RES_ADJ_DURATION = 10.0 # Seconds. Lenght of time in ultra resolution mode while saving data
+RES_ADJ_DURATION = 20.0 # Seconds. Length of time in ultra resolution mode while saving data
 #SAVE_DATA_PREFIX = "obj_detect_cam_adjust_automation/" # Trailing slash makes this a subdirectory name, not a filename prefix
 SAVE_DATA_PREFIX = "obj_detect_auto_"
 SAVE_DATA_RATE_HZ = 1.0
@@ -56,6 +68,10 @@ save_data_pub = rospy.Publisher(SAVE_DATA_TOPIC, SaveData, queue_size=10)
 stop_classifier_pub = rospy.Publisher(STOP_CLASSIFIER_TOPIC, Empty, queue_size=10)
 save_data_rate_pub = rospy.Publisher(SAVE_DATA_RATE_TOPIC, SaveDataRate, queue_size=10)
 save_data_prefix_pub = rospy.Publisher(SAVE_DATA_PREFIX_TOPIC, String, queue_size=10)
+nepi_link_enable_pub = rospy.Publisher(NEPI_LINK_ENABLE_TOPIC, Bool, queue_size=10)
+nepi_link_set_data_sources = rospy.Publisher(NEPI_LINK_SET_DATA_SOURCES_TOPIC, StringArray, queue_size=10)
+nepi_link_collect_data_pub = rospy.Publisher(NEPI_LINK_COLLECT_DATA_TOPIC, Empty, queue_size=10)
+nepi_link_connect_now_pub = rospy.Publisher(NEPI_LINK_CONNECT_TOPIC, Empty, queue_size=10)
 
 def cleanup_actions():
     rospy.loginfo("Shutting down: Executing script cleanup actions")
@@ -86,12 +102,31 @@ def object_detected_callback(bounding_box_msg):
       
       rospy.loginfo("Increasing camera resolution to ULTRA")
       res_adj_pub.publish(ULTRA_RES_VALUE)
+      time.sleep(3) # Give it time to switch resolutions
       
       rospy.loginfo("Enabling data saving")
       save_data_pub.publish(save_continuous=True, save_raw=False)
 
+      rospy.loginfo("Enabling NEPI CONNECT")
+      nepi_link_enable_pub.publish(True)
+
+      rospy.loginfo("Setting NEPI CONNECT data sources")
+      nepi_link_set_data_sources.publish([COLOR_2D_IMG_TOPIC_SHORT])
+      time.sleep(1)
+
+      rospy.loginfo("Starting data collection for NEPI CONNECT")
+      nepi_link_collect_data_pub.publish()
+
       rospy.loginfo("Delaying " + str(RES_ADJ_DURATION) + " secs")
       time.sleep(RES_ADJ_DURATION)
+
+      rospy.loginfo("Kicking off NEPI CONNECT cloud connection")
+      nepi_link_connect_now_pub.publish()
+      time.sleep(1)
+
+      rospy.loginfo("Disabling NEPI CONNECT locally... current connection will complete")
+      nepi_link_enable_pub.publish(False)
+      time.sleep(2)
       
       rospy.loginfo("Script completed successfully -- terminating")
       rospy.signal_shutdown("Script complete")
