@@ -25,14 +25,24 @@ from nepi_ros_interfaces.srv import (
     GetScriptStatusQueryResponse,
     GetSystemStatsQuery,
     GetSystemStatsQueryResponse,
+    SystemStorageFolderQuery
 )
 
-AUTOMATION_DIR = "/mnt/nepi_storage/automation_scripts"
 CONFIG_FILE = "/opt/nepi/ros/etc/automation_mgr/automation_mgr.yaml"
 
 class AutomationManager:
+    AUTOMATION_DIR = "/mnt/nepi_storage/automation_scripts"
+
     def __init__(self):
 
+        # Try to obtain the path to automation_scripts from the system_mgr
+        try:
+            rospy.wait_for_service('system_storage_folder_query', 10.0)
+            system_storage_folder_query = rospy.ServiceProxy('system_storage_folder_query', SystemStorageFolderQuery)
+            self.AUTOMATION_DIR = system_storage_folder_query('automation_scripts').folder_path
+        except Exception as e:
+            rospy.logwarn("Failed to obtain system automation_scripts folder... falling back to " + self.AUTOMATION_DIR)
+        
         self.scripts = self.get_scripts()
         self.config = self.load_config()
         self.file_sizes = self.get_file_sizes()
@@ -58,7 +68,7 @@ class AutomationManager:
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
 
-        self.watch_thread = threading.Thread(target=self.watch_directory, args=(AUTOMATION_DIR, self.on_new_file))
+        self.watch_thread = threading.Thread(target=self.watch_directory, args=(self.AUTOMATION_DIR, self.on_new_file))
         self.watch_thread.daemon = True
         self.watch_thread.start()
         
@@ -69,8 +79,8 @@ class AutomationManager:
         #self.scripts = self.get_scripts()
         scripts = []
         
-        for filename in os.listdir(AUTOMATION_DIR):
-            filepath = os.path.join(AUTOMATION_DIR, filename)
+        for filename in os.listdir(self.AUTOMATION_DIR):
+            filepath = os.path.join(self.AUTOMATION_DIR, filename)
             if os.access(filepath, os.X_OK) and not os.path.isdir(filepath):
                 scripts.append(filename)
         return scripts
@@ -98,7 +108,7 @@ class AutomationManager:
         """
         file_sizes = {}
         for filename in self.scripts:
-            filepath = os.path.join(AUTOMATION_DIR, filename)
+            filepath = os.path.join(self.AUTOMATION_DIR, filename)
             file_size = os.path.getsize(filepath)
             file_sizes[filename] = file_size
         return file_sizes
@@ -159,7 +169,7 @@ class AutomationManager:
         if req.script in self.scripts:
             if req.script not in self.config or self.config[req.script]:
                 try:
-                    process = subprocess.Popen([os.path.join(AUTOMATION_DIR, req.script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    process = subprocess.Popen([os.path.join(self.AUTOMATION_DIR, req.script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time()}
                     self.running_scripts.add(req.script)  # Update the running_scripts set
                     rospy.loginfo("%s: running" % req.script)
