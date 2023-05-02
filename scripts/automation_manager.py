@@ -74,14 +74,13 @@ class AutomationManager:
         
     def get_scripts(self):
         """
-        Detect and report executable automation scripts that exist in a particular directory in the filesystem.
+        Detect and report automation scripts that exist in a particular directory in the filesystem.
         """
         #self.scripts = self.get_scripts()
         scripts = []
-        
         for filename in os.listdir(self.AUTOMATION_DIR):
             filepath = os.path.join(self.AUTOMATION_DIR, filename)
-            if os.access(filepath, os.X_OK) and not os.path.isdir(filepath):
+            if not os.path.isdir(filepath):
                 scripts.append(filename)
         return scripts
 
