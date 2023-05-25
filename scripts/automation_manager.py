@@ -10,6 +10,7 @@ import time
 import psutil
 
 import rospy
+
 from std_msgs.msg import String
 from nepi_ros_interfaces.srv import (
     GetScriptsQuery,
@@ -28,6 +29,12 @@ from nepi_ros_interfaces.srv import (
     SystemStorageFolderQuery
 )
 
+from nepi_edge_sdk_base.save_cfg_if import SaveCfgIF
+from nepi_ros_interfaces.msg import AutoStartEnabled
+
+DEFAULT_AUTOSTART_SCRIPT = None
+DEFAULT_AUTOSTART_ENABLED = False
+
 CONFIG_FILE = "/opt/nepi/ros/etc/automation_mgr/automation_mgr.yaml"
 
 class AutomationManager:
@@ -42,7 +49,11 @@ class AutomationManager:
             self.AUTOMATION_DIR = system_storage_folder_query('automation_scripts').folder_path
         except Exception as e:
             rospy.logwarn("Failed to obtain system automation_scripts folder... falling back to " + self.AUTOMATION_DIR)
+
+        self.autostart_msgs = {}
         
+        self.save_cfg_if = SaveCfgIF(updateParamsCallback=None, paramsModifiedCallback=self.updateFromParamServer)
+
         self.scripts = self.get_scripts()
         self.config = self.load_config()
         self.file_sizes = self.get_file_sizes()
@@ -71,6 +82,39 @@ class AutomationManager:
         self.watch_thread = threading.Thread(target=self.watch_directory, args=(self.AUTOMATION_DIR, self.on_new_file))
         self.watch_thread.daemon = True
         self.watch_thread.start()
+
+        # Subscribe to topics
+        rospy.Subscriber('enable_script_autostart', AutoStartEnabled, self.AutoStartEnabled_cb)
+
+    def get_scripts_parameters(self):
+        rospy.loginfo("ready to run get_scripts_parameters!!!")
+        try:
+            scripts_params = rospy.get_param('~scripts')
+        except KeyError:
+            rospy.logwarn("Parameter ~scripts does not exist")
+            scripts_params = {}
+
+        rospy.loginfo("Scripts parameters: %s" % scripts_params)
+        return scripts_params
+
+    def AutoStartEnabled_cb(self, msg):
+        rospy.loginfo("ready to run AUTOSTART!!!")
+        rospy.loginfo("AUTOSTART : %s" % msg.script)
+        rospy.loginfo("AUTOSTART : %s" % msg.enabled)
+
+        # Insert or update msg into autostart_msgs dictionary
+        self.autostart_msgs[msg.script] = msg.enabled
+
+        # Log the current state of autostart_msgs dictionary
+        rospy.loginfo("Current autostart_msgs dictionary: %s" % self.autostart_msgs)
+
+        # Set the parameter on the ROS parameter server
+        rospy.set_param('~scripts', self.autostart_msgs)
+        self.updateFromParamServer()
+
+    def updateFromParamServer(self):
+        # Read the parameter from the ROS parameter server
+        self.get_scripts_parameters()
         
     def get_scripts(self):
         """
