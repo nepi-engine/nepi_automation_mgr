@@ -11,7 +11,7 @@ import psutil
 
 import rospy
 
-from std_msgs.msg import String
+from std_msgs.msg import Empty
 from nepi_ros_interfaces.srv import (
     GetScriptsQuery,
     GetScriptsQueryResponse,
@@ -20,6 +20,7 @@ from nepi_ros_interfaces.srv import (
     SetScriptEnabled,
     SetScriptEnabledResponse,
     LaunchScript,
+    LaunchScriptRequest,
     LaunchScriptResponse,
     StopScript,
     GetScriptStatusQuery,
@@ -31,11 +32,6 @@ from nepi_ros_interfaces.srv import (
 
 from nepi_edge_sdk_base.save_cfg_if import SaveCfgIF
 from nepi_ros_interfaces.msg import AutoStartEnabled
-
-DEFAULT_AUTOSTART_SCRIPT = None
-DEFAULT_AUTOSTART_ENABLED = False
-
-CONFIG_FILE = "/opt/nepi/ros/etc/automation_mgr/automation_mgr.yaml"
 
 class AutomationManager:
     AUTOMATION_DIR = "/mnt/nepi_storage/automation_scripts"
@@ -50,12 +46,9 @@ class AutomationManager:
         except Exception as e:
             rospy.logwarn("Failed to obtain system automation_scripts folder... falling back to " + self.AUTOMATION_DIR)
 
-        self.autostart_msgs = {}
-        
         self.save_cfg_if = SaveCfgIF(updateParamsCallback=self.setCurrentSettingsAsDefault, paramsModifiedCallback=self.updateFromParamServer)
 
         self.scripts = self.get_scripts()
-        self.config = self.load_config()
         self.file_sizes = self.get_file_sizes()
 
         self.processes = {}
@@ -65,11 +58,14 @@ class AutomationManager:
             #TODO: These should be gathered from a stats file on disk to remain cumulative for all time (clearable on ROS command)
             self.script_counters[script] = {'started': 0, 'completed': 0, 'stopped_manually': 0, 'errored_out': 0, 'cumulative_run_time': 0.0}
 
+        self.script_configs = {} # Dictionary of dictionaries  
+        self.setupScriptConfigs()
+        self.updateFromParamServer() # Call this to grab the parameters initially
+                
         self.running_scripts = set()
 
         self.get_scripts_service = rospy.Service("get_scripts", GetScriptsQuery, self.handle_get_scripts)
         self.get_running_scripts_service = rospy.Service("get_running_scripts", GetRunningScriptsQuery, self.handle_get_running_scripts)
-        self.set_script_enabled_service = rospy.Service("set_script_enabled", SetScriptEnabled, self.handle_set_script_enabled)
         self.launch_script_service = rospy.Service("launch_script", LaunchScript, self.handle_launch_script)
         self.stop_script_service = rospy.Service("stop_script", StopScript, self.handle_stop_script)
         self.get_script_status_service = rospy.Service("get_script_status", GetScriptStatusQuery, self.handle_get_script_status)
@@ -79,45 +75,82 @@ class AutomationManager:
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
 
-        self.watch_thread = threading.Thread(target=self.watch_directory, args=(self.AUTOMATION_DIR, self.on_new_file))
+        self.watch_thread = threading.Thread(target=self.watch_directory, args=(self.AUTOMATION_DIR, self.on_file_change))
         self.watch_thread.daemon = True
         self.watch_thread.start()
 
         # Subscribe to topics
         rospy.Subscriber('enable_script_autostart', AutoStartEnabled, self.AutoStartEnabled_cb)
 
-    def get_scripts_parameters(self):
-        rospy.loginfo("ready to run get_scripts_parameters!!!")
+        # Autolaunch any scripts that are so-configured
+        for script_name in self.script_configs:
+            script_config = self.script_configs[script_name]
+            if script_config['auto_start'] is True:
+                rospy.loginfo("Auto-starting " + script_name)
+                req = LaunchScriptRequest(script_name)
+                self.handle_launch_script(req)
+
+    def setupScriptConfigs(self):
+        # Ensure all known scripts have a script_config
+        for script_name in self.scripts:
+            if script_name not in self.script_configs:
+                rospy.logdebug("Initializing config for " + script_name)
+                self.script_configs[script_name] = {'auto_start': False, 'cmd_line_args': ''}
+
+        # And make sure any unknown scripts don't
+        configs_to_delete = [] # Can't delete configs while iterating over them -- runtime error, so just capture them here and then delete in a fresh loop
+        for script_name in self.script_configs:
+            if script_name not in self.scripts:
+                rospy.loginfo("Purging unknown script " + script_name + "from script_configs")
+                configs_to_delete.append(script_name)
+        for script_name in configs_to_delete:
+            del self.script_configs[script_name]
+
+    def update_script_configs(self):
+        rospy.logdebug("ready to run update_script_configs!!!")
+        script_configs = {} # Dictionary of dictionaries
         try:
-            scripts_params = rospy.get_param('~scripts')
+            script_configs = rospy.get_param('~script_configs')
         except KeyError:
-            rospy.logwarn("Parameter ~scripts does not exist")
-            scripts_params = {}
+            #rospy.logwarn("Parameter ~script_configs does not exist")
+            script_configs = {}
 
-        rospy.loginfo("Scripts parameters: %s" % scripts_params)
-        return scripts_params
+        for script_name in script_configs:
+            if script_name not in self.scripts:
+                rospy.logwarn("Config file includes configuration for unknown script " + script_name  + "... skipping this config")
+                continue
 
+            script_config = script_configs[script_name]
+            rospy.loginfo(script_name + " configuration from param server: " + str(script_config))
+
+            if 'auto_start' not in script_config or 'cmd_line_args' not in script_config:
+                rospy.logwarn("Invalid config. file settings for script " + script_name + "... skipping this config")
+                continue
+
+            self.script_configs[script_name]['auto_start'] = script_config['auto_start']
+            self.script_configs[script_name]['cmd_line_args'] = script_config['cmd_line_args']
+        
     def AutoStartEnabled_cb(self, msg):
-        rospy.loginfo("ready to run AUTOSTART!!!")
-        rospy.loginfo("AUTOSTART : %s" % msg.script)
-        rospy.loginfo("AUTOSTART : %s" % msg.enabled)
+        if msg.script not in self.script_configs:
+            rospy.logwarn("Cannot configure autostart for unknown script " + msg.script)
+            return
+        
+        rospy.loginfo("Script AUTOSTART : " + msg.script + " - " + str(msg.enabled))
+        
+        self.script_configs[msg.script]['auto_start'] = msg.enabled
 
-        # Insert or update msg into autostart_msgs dictionary
-        self.autostart_msgs[msg.script] = msg.enabled
-
-        # Log the current state of autostart_msgs dictionary
-        rospy.loginfo("Current autostart_msgs dictionary: %s" % self.autostart_msgs)
-
-        # Set the parameter on the ROS parameter server
-        rospy.set_param('~scripts', self.autostart_msgs)
-        self.updateFromParamServer()
+        # This is an unusual parameter in that it triggers an automatic save of the config file
+        # so update the param server, then tell it to save the file via store_params
+        # saveConfig() will trigger the setCurrentSettingsAsDefault callback, so param server will
+        # be up-to-date before the file gets saved
+        self.save_cfg_if.saveConfig(Empty)
 
     def updateFromParamServer(self):
-        # Read the parameter from the ROS parameter server
-        self.get_scripts_parameters()
+        # Read the script_configs parameter from the ROS parameter server
+        self.update_script_configs()
 
     def setCurrentSettingsAsDefault(self):
-        pass
+        rospy.set_param('~script_configs', self.script_configs)
         
     def get_scripts(self):
         """
@@ -142,11 +175,21 @@ class AutomationManager:
                     if file not in files_mtime or files_mtime[file] != current_mtime:
                         files_mtime[file] = current_mtime
                         callback(file_path)
+            # And check for deleted files, too
+            deleted_files = []
+            for file in files_mtime.keys():
+                if file not in os.listdir(directory):
+                    deleted_files.append(file)
+                    callback(os.path.join(directory, file))
+            for file in deleted_files:
+                del files_mtime[file]
             time.sleep(1)
 
-    def on_new_file(self, file_path):
-        rospy.loginfo("New file detected: %s", os.path.basename(file_path))
+    def on_file_change(self, file_path):
+        rospy.loginfo("File change detected: %s", os.path.basename(file_path))
         self.scripts = self.get_scripts()
+        # Update the script configs here to set up the new script
+        self.setupScriptConfigs()
 
     def get_file_sizes(self):
         """
@@ -158,26 +201,6 @@ class AutomationManager:
             file_size = os.path.getsize(filepath)
             file_sizes[filename] = file_size
         return file_sizes
-
-    def load_config(self):
-        """
-        Load the persistent configuration (ROS yaml config file) for enabling/disabling automation scripts to run at
-        system start-up.
-        """
-        if not os.path.isfile(CONFIG_FILE):
-            return {}
-        with open(CONFIG_FILE, "r") as f:
-            config = yaml.safe_load(f)
-            if config is None:
-                config = {}
-            return config
-
-    def save_config(self):
-        """
-        Save the persistent configuration (ROS yaml config file).
-        """
-        with open(CONFIG_FILE, "w") as f:
-            yaml.dump(self.config, f)
 
     def handle_get_scripts(self, req):
         """
@@ -197,36 +220,21 @@ class AutomationManager:
 
         return GetRunningScriptsQueryResponse(running_scripts)
 
-    def handle_set_script_enabled(self, req):
-        """
-        Handle a request to enable or disable an automation script.
-        """
-        if req.script in self.config:
-            self.config[req.script] = req.enabled
-            self.save_config()
-            return SetScriptEnabledResponse(True)
-        else:
-            return SetScriptEnabledResponse(False)
-
     def handle_launch_script(self, req):
         """
         Handle a request to launch an automation script.
         """            
         if req.script in self.scripts:
-            if req.script not in self.config or self.config[req.script]:
-                try:
-                    process = subprocess.Popen([os.path.join(self.AUTOMATION_DIR, req.script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time()}
-                    self.running_scripts.add(req.script)  # Update the running_scripts set
-                    rospy.loginfo("%s: running" % req.script)
-                    self.script_counters[req.script]['started'] += 1  # update the counter
-                    return LaunchScriptResponse(True)
-
-                except Exception as e:
-                    rospy.logwarn("%s: error (%s)" % (req.script, str(e)))
-                    return LaunchScriptResponse(False)
-            else:
-                rospy.loginfo("%s: disabled in configuration" % req.script)
+            try:
+                process_cmdline = [os.path.join(self.AUTOMATION_DIR, req.script)] + self.script_configs[req.script]['cmd_line_args'].split()
+                process = subprocess.Popen(process_cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time()}
+                self.running_scripts.add(req.script)  # Update the running_scripts set
+                rospy.loginfo("%s: running" % req.script)
+                self.script_counters[req.script]['started'] += 1  # update the counter
+                return LaunchScriptResponse(True)
+            except Exception as e:
+                rospy.logwarn("%s: error (%s)" % (req.script, str(e)))
                 return LaunchScriptResponse(False)
         else:
             rospy.loginfo("%s: not found" % req.script)
@@ -312,7 +320,7 @@ class AutomationManager:
         script_name = req.script
         response = GetSystemStatsQueryResponse(cpu_percent=None, memory_percent=None, run_time_s=None,
                                                cumulative_run_time_s=None, file_size_bytes=None, started_runs=None,
-                                               completed_runs=None, error_runs=None, stopped_manually=None)
+                                               completed_runs=None, error_runs=None, stopped_manually=None, auto_start_enabled=None)
 
         if not script_name:
             rospy.logwarn_throttle(10, "Requested script not found: %s" % script_name)
@@ -327,6 +335,9 @@ class AutomationManager:
         response.error_runs = self.script_counters[script_name]['errored_out']
         response.stopped_manually = self.script_counters[script_name]['stopped_manually']
         response.cumulative_run_time_s = self.script_counters[script_name]['cumulative_run_time']
+        
+        # And config info we want to feed back... TODO: maybe these should be part of a totally separate request
+        response.auto_start_enabled = self.script_configs[script_name]['auto_start']
 
         # Check if the script_name has a 'pid' key in the dictionary to determine whether or not to gather running-script stats
         if (script_name not in self.processes) or ('pid' not in self.processes[script_name]):
