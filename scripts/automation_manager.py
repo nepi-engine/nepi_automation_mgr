@@ -52,7 +52,7 @@ class AutomationManager:
 
         self.autostart_msgs = {}
         
-        self.save_cfg_if = SaveCfgIF(updateParamsCallback=None, paramsModifiedCallback=self.updateFromParamServer)
+        self.save_cfg_if = SaveCfgIF(updateParamsCallback=self.setCurrentSettingsAsDefault, paramsModifiedCallback=self.updateFromParamServer)
 
         self.scripts = self.get_scripts()
         self.config = self.load_config()
@@ -115,6 +115,9 @@ class AutomationManager:
     def updateFromParamServer(self):
         # Read the parameter from the ROS parameter server
         self.get_scripts_parameters()
+
+    def setCurrentSettingsAsDefault(self):
+        pass
         
     def get_scripts(self):
         """
