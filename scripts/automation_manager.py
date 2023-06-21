@@ -17,8 +17,6 @@ from nepi_ros_interfaces.srv import (
     GetScriptsQueryResponse,
     GetRunningScriptsQuery,
     GetRunningScriptsQueryResponse,
-    SetScriptEnabled,
-    SetScriptEnabledResponse,
     LaunchScript,
     LaunchScriptRequest,
     LaunchScriptResponse,
@@ -68,7 +66,6 @@ class AutomationManager:
         self.get_running_scripts_service = rospy.Service("get_running_scripts", GetRunningScriptsQuery, self.handle_get_running_scripts)
         self.launch_script_service = rospy.Service("launch_script", LaunchScript, self.handle_launch_script)
         self.stop_script_service = rospy.Service("stop_script", StopScript, self.handle_stop_script)
-        self.get_script_status_service = rospy.Service("get_script_status", GetScriptStatusQuery, self.handle_get_script_status)
         self.get_system_stats_service = rospy.Service("get_system_stats", GetSystemStatsQuery, self.handle_get_system_stats)
 
         self.monitor_thread = threading.Thread(target=self.monitor_scripts)
@@ -262,18 +259,6 @@ class AutomationManager:
             rospy.logwarn("%s: not running" % req.script)
             return False
     
-    def handle_get_script_status(self, req):
-        """
-        Handle a request to get the status of a script.
-        """
-        if req.script in self.scripts:
-            if req.script in self.processes:
-                return GetScriptStatusQueryResponse("running")
-            else:
-                return GetScriptStatusQueryResponse("ready to run")
-        else:
-            return GetScriptStatusQueryResponse("not found")
-
     def monitor_scripts(self):
         """
         Monitor the status of all automation scripts.
