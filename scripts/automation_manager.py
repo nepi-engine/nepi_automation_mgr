@@ -274,7 +274,7 @@ class AutomationManager:
                             self.script_counters[script]['completed'] += 1
                             rospy.loginfo("%s: completed" % script)
                         else:
-                            traceback_str = "".join(traceback.format_exception_only(type(process.returncode), process.returncode))
+                            traceback_str = "".join(traceback.format_exception_only(type(process['process'].returncode), process['process'].returncode))
                             self.script_counters[script]['errored_out'] += 1
                             rospy.logwarn("%s: error (%s)" % (script, traceback_str.strip()))
                                                
