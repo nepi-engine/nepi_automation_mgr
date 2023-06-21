@@ -100,6 +100,9 @@ class AutomationManager:
                 rospy.logdebug("Initializing config for " + script_name)
                 self.script_configs[script_name] = {'auto_start': False, 'cmd_line_args': ''}
 
+                # Good place to dos2unix it
+                subprocess.call(['dos2unix', os.path.join(self.AUTOMATION_DIR, script_name)])
+
         # And make sure any unknown scripts don't
         configs_to_delete = [] # Can't delete configs while iterating over them -- runtime error, so just capture them here and then delete in a fresh loop
         for script_name in self.script_configs:
@@ -245,7 +248,11 @@ class AutomationManager:
         """            
         if req.script in self.scripts:
             try:
-                process_cmdline = [os.path.join(self.AUTOMATION_DIR, req.script)] + self.script_configs[req.script]['cmd_line_args'].split()
+                # Ensure the script is executable (and readable/writable -- why not)
+                script_full_path = os.path.join(self.AUTOMATION_DIR, req.script)
+                os.chmod(script_full_path, 0774)
+
+                process_cmdline = [script_full_path] + self.script_configs[req.script]['cmd_line_args'].split()
                 process = subprocess.Popen(process_cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time()}
                 self.running_scripts.add(req.script)  # Update the running_scripts set
@@ -253,7 +260,7 @@ class AutomationManager:
                 self.script_counters[req.script]['started'] += 1  # update the counter
                 return LaunchScriptResponse(True)
             except Exception as e:
-                rospy.logwarn("%s: error (%s)" % (req.script, str(e)))
+                rospy.logwarn("%s: cmd (%s), error (%s)" % (req.script, process_cmdline, str(e)))
                 return LaunchScriptResponse(False)
         else:
             rospy.loginfo("%s: not found" % req.script)
