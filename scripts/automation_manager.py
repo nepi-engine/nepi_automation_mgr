@@ -87,9 +87,15 @@ class AutomationManager:
                 req = LaunchScriptRequest(script_name)
                 self.handle_launch_script(req)
 
-    def setupScriptConfigs(self):
+    def setupScriptConfigs(self, single_script=None):
+        script_list = []
+        if single_script is None:
+            script_list = self.scripts
+        else:
+            script_list = [single_script]
+
         # Ensure all known scripts have a script_config
-        for script_name in self.scripts:
+        for script_name in script_list:
             if script_name not in self.script_configs:
                 rospy.logdebug("Initializing config for " + script_name)
                 self.script_configs[script_name] = {'auto_start': False, 'cmd_line_args': ''}
@@ -171,22 +177,38 @@ class AutomationManager:
                     current_mtime = os.path.getmtime(file_path)
                     if file not in files_mtime or files_mtime[file] != current_mtime:
                         files_mtime[file] = current_mtime
-                        callback(file_path)
+                        callback(file_path, file_deleted=False)
             # And check for deleted files, too
             deleted_files = []
             for file in files_mtime.keys():
                 if file not in os.listdir(directory):
                     deleted_files.append(file)
-                    callback(os.path.join(directory, file))
+                    callback(os.path.join(directory, file), file_deleted=True)
             for file in deleted_files:
                 del files_mtime[file]
             time.sleep(1)
 
-    def on_file_change(self, file_path):
-        rospy.loginfo("File change detected: %s", os.path.basename(file_path))
+    def on_file_change(self, file_path, file_deleted):
+        script_name = os.path.basename(file_path)
+        rospy.loginfo("File change detected: %s", os.path.basename(script_name))
+        
+        #Update the scripts list
         self.scripts = self.get_scripts()
-        # Update the script configs here to set up the new script
-        self.setupScriptConfigs()
+
+        if file_deleted is False:
+            # Update the script config here to set up the new/modified script
+            self.setupScriptConfigs(single_script=script_name)
+
+            # Update the file size in case it changed
+            self.file_sizes[script_name] = os.path.getsize(file_path)
+
+            # Reset the script counters entry for this file... consider this a new script
+            self.script_counters[script_name] = {'started': 0, 'completed': 0, 'stopped_manually': 0, 'errored_out': 0, 'cumulative_run_time': 0.0}
+        else:
+            # Just delete this script from all relevant dictionaries
+            self.script_configs.pop(script_name, None)
+            self.file_sizes.pop(script_name, None)
+            self.script_counters.pop(script_name, None)
 
     def get_file_sizes(self):
         """
@@ -307,7 +329,7 @@ class AutomationManager:
                                                cumulative_run_time_s=None, file_size_bytes=None, started_runs=None,
                                                completed_runs=None, error_runs=None, stopped_manually=None, auto_start_enabled=None)
 
-        if not script_name:
+        if (script_name not in self.file_sizes) or (script_name not in self.script_counters) or (script_name not in self.script_configs):
             rospy.logwarn_throttle(10, "Requested script not found: %s" % script_name)
             return response # Blank response
 
