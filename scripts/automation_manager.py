@@ -250,7 +250,7 @@ class AutomationManager:
             try:
                 # Ensure the script is executable (and readable/writable -- why not)
                 script_full_path = os.path.join(self.AUTOMATION_DIR, req.script)
-                os.chmod(script_full_path, 0774)
+                os.chmod(script_full_path, 0o774)
 
                 process_cmdline = [script_full_path] + self.script_configs[req.script]['cmd_line_args'].split()
                 process = subprocess.Popen(process_cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
