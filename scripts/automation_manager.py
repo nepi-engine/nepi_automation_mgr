@@ -287,19 +287,29 @@ class AutomationManager:
         Handle a request to stop an automation script.
         """
         if req.script in self.processes:
+            process = self.processes[req.script]['process']
+            retval = False
             try:
-                process = self.processes[req.script]['process']
                 process.terminate()
-                process.wait()
+                process.wait(timeout=self.SCRIPT_STOP_TIMEOUT_S)
                 self.script_counters[req.script]['cumulative_run_time'] += (rospy.Time.now() - rospy.Time.from_sec(self.processes[req.script]['start_time'])).to_sec()
+                self.processes[req.script]['logfile'].close()
                 del self.processes[req.script]
                 self.running_scripts.remove(req.script)  # Update the running_scripts set
                 rospy.loginfo("%s: stopped" % req.script)
                 self.script_counters[req.script]['stopped_manually'] += 1  # update the counter
-                return True
+                retval = True
             except Exception as e:
-                rospy.logwarn("%s: error stopping (%s)" % (req.script, str(e)))
-                return False
+                rospy.logwarn("%s: error stopping (%s) with SIGTERM... now trying SIGKILL" % (req.script, str(e)))
+                process.kill()
+                try:
+                    process.wait(timeout=self.SCRIPT_STOP_TIMEOUT_S)
+                    retval = True
+                except Exception as e2:
+                    rospy.logerr("%s: failed to kill %s (%s)" % (req.script, str(e2)))
+                    retval = False
+            
+            return retval
         else:
             rospy.logwarn("%s: not running" % req.script)
             return False
