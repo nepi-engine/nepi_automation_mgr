@@ -33,6 +33,8 @@ from nepi_ros_interfaces.msg import AutoStartEnabled
 
 class AutomationManager:
     AUTOMATION_DIR = "/mnt/nepi_storage/automation_scripts"
+    SCRIPT_STOP_TIMEOUT_S = 5.0
+    SCRIPT_LOG_PATH = "/mnt/nepi_storage/logs/automation_script_logs"
 
     def __init__(self):
 
@@ -41,6 +43,7 @@ class AutomationManager:
             rospy.wait_for_service('system_storage_folder_query', 10.0)
             system_storage_folder_query = rospy.ServiceProxy('system_storage_folder_query', SystemStorageFolderQuery)
             self.AUTOMATION_DIR = system_storage_folder_query('automation_scripts').folder_path
+            self.SCRIPT_LOG_PATH = system_storage_folder_query('logs/automation_script_logs').folder_path
         except Exception as e:
             rospy.logwarn("Failed to obtain system automation_scripts folder... falling back to " + self.AUTOMATION_DIR)
 
@@ -247,20 +250,33 @@ class AutomationManager:
         Handle a request to launch an automation script.
         """            
         if req.script in self.scripts:
-            try:
-                # Ensure the script is executable (and readable/writable -- why not)
-                script_full_path = os.path.join(self.AUTOMATION_DIR, req.script)
-                os.chmod(script_full_path, 0o774)
+            if req.script not in self.running_scripts:
+                try:
+                    # Ensure the script is executable (and readable/writable -- why not)
+                    script_full_path = os.path.join(self.AUTOMATION_DIR, req.script)
+                    os.chmod(script_full_path, 0o774)
 
-                process_cmdline = [script_full_path] + self.script_configs[req.script]['cmd_line_args'].split()
-                process = subprocess.Popen(process_cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time()}
-                self.running_scripts.add(req.script)  # Update the running_scripts set
-                rospy.loginfo("%s: running" % req.script)
-                self.script_counters[req.script]['started'] += 1  # update the counter
-                return LaunchScriptResponse(True)
-            except Exception as e:
-                rospy.logwarn("%s: cmd (%s), error (%s)" % (req.script, process_cmdline, str(e)))
+                    # Set up logfile. Because we pipe stdout from the script into the file, we must pay attention to buffering at
+                    # multiple levels. open() and Popen() are set for line buffering, and we launch the script in a PYTHONUNBUFFERED environment
+                    # to ensure that the script print() calls don't get buffered... without that last one, everything is buffered at 8KB no matter
+                    # what open() and Popen() are set to.
+                    process_cmdline = [script_full_path] + self.script_configs[req.script]['cmd_line_args'].split()
+                    script_logfilename = os.path.join(self.SCRIPT_LOG_PATH, req.script + '.log')
+                    script_logfile = open(script_logfilename, 'wt', buffering=1) # buffering=1 ==> Line buffering
+                    curr_env = os.environ.copy()
+                    curr_env['PYTHONUNBUFFERED'] = 'on'
+                    
+                    process = subprocess.Popen(process_cmdline, stdout=script_logfile, stderr=subprocess.STDOUT, bufsize=1, env=curr_env) # bufsize=1 ==> Line buffering
+                    self.processes[req.script] = {'process': process, 'pid': process.pid, 'start_time': psutil.Process(process.pid).create_time(), 'logfile': script_logfile}
+                    self.running_scripts.add(req.script)  # Update the running_scripts set
+                    rospy.loginfo("%s: running" % req.script)
+                    self.script_counters[req.script]['started'] += 1  # update the counter
+                    return LaunchScriptResponse(True)
+                except Exception as e:
+                    rospy.logwarn("%s: cmd (%s), error (%s)" % (req.script, process_cmdline, str(e)))
+                    return LaunchScriptResponse(False)
+            else:
+                rospy.logwarn("%s is already running... will not start another instance" % (req.script))
                 return LaunchScriptResponse(False)
         else:
             rospy.loginfo("%s: not found" % req.script)
@@ -299,30 +315,19 @@ class AutomationManager:
                     if process['process'].poll() is not None:
                         del self.processes[script]
                         self.running_scripts.remove(script)  # Update the running_scripts set
+                                                
+                        process['logfile'].close()
                         if process['process'].returncode == 0:
                             self.script_counters[script]['completed'] += 1
                             rospy.loginfo("%s: completed" % script)
                         else:
-                            traceback_str = "".join(traceback.format_exception_only(type(process['process'].returncode), process['process'].returncode))
                             self.script_counters[script]['errored_out'] += 1
-                            rospy.logwarn("%s: error (%s)" % (script, traceback_str.strip()))
+                            rospy.logwarn("%s: error (ec = %s)" % (script, str(process['process'].returncode)))
                                                
                         # Update the cumulative run time whether exited on success or error
                         self.script_counters[script]['cumulative_run_time'] += (rospy.Time.now() - rospy.Time.from_sec(process['start_time'])).to_sec()
-                    else:
-                        try:
-                            stdout, stderr = process['process'].communicate()
-                            if stdout:
-                                rospy.loginfo("%s stdout: %s" % (script, stdout.strip().decode()))
-                            if stderr:
-                                rospy.logwarn("%s stderr: %s" % (script, stderr.strip().decode()))
-                        except subprocess.CalledProcessError as e:
-                            print("Error:", e.returncode, e.output)
-                            pass
-                else:
-                    # rospy.loginfo("%s: ready to run" % script)
-                    pass
-
+                        process['logfile'].close()
+        
             # Output script counters
             rospy.logdebug("Script counters:")
             for script, counter in self.script_counters.items():
@@ -333,7 +338,7 @@ class AutomationManager:
     def handle_get_system_stats(self, req):
         script_name = req.script
         response = GetSystemStatsQueryResponse(cpu_percent=None, memory_percent=None, run_time_s=None,
-                                               cumulative_run_time_s=None, file_size_bytes=None, started_runs=None,
+                                               cumulative_run_time_s=None, file_size_bytes=None, log_size_bytes=None, started_runs=None,
                                                completed_runs=None, error_runs=None, stopped_manually=None, auto_start_enabled=None)
 
         if (script_name not in self.file_sizes) or (script_name not in self.script_counters) or (script_name not in self.script_configs):
@@ -353,11 +358,16 @@ class AutomationManager:
         # And config info we want to feed back... TODO: maybe these should be part of a totally separate request
         response.auto_start_enabled = self.script_configs[script_name]['auto_start']
 
-        # Check if the script_name has a 'pid' key in the dictionary to determine whether or not to gather running-script stats
-        if (script_name not in self.processes) or ('pid' not in self.processes[script_name]):
+        # Check if the script_name is in the running list
+        if (script_name not in self.running_scripts):
+            try:
+                response.log_size_bytes = os.path.getsize(os.path.join(self.SCRIPT_LOG_PATH, script_name + ".log"))
+            except:
+                pass
             return response  # Only includes the 'static' info
-
+        
         pid = self.processes[script_name]['pid']
+        response.log_size_bytes = os.fstat(self.processes[script_name]['logfile'].fileno()).st_size
         #rospy.loginfo("PID for script %s: %d" % (script_name, pid))
 
         try:
