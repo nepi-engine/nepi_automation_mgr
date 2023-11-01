@@ -234,13 +234,13 @@ class AutomationManager:
         rospy.logdebug("Scripts: %s" % self.scripts)
         rospy.logdebug("File sizes: %s" % self.file_sizes)
 
-        return GetScriptsQueryResponse(self.scripts)
+        return GetScriptsQueryResponse(sorted(self.scripts))
     
     def handle_get_running_scripts(self, req):
         """
         Handle a request to get a list of currently running scripts.
         """
-        running_scripts = list(self.running_scripts)
+        running_scripts = sorted(list(self.running_scripts))
         #rospy.loginfo("Running scripts: %s" % running_scripts)
 
         return GetRunningScriptsQueryResponse(running_scripts)
