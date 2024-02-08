@@ -45,8 +45,6 @@ from nepi_ros_interfaces.srv import (
     LaunchScriptRequest,
     LaunchScriptResponse,
     StopScript,
-    GetScriptStatusQuery,
-    GetScriptStatusQueryResponse,
     GetSystemStatsQuery,
     GetSystemStatsQueryResponse,
     SystemStorageFolderQuery
@@ -57,7 +55,7 @@ from nepi_ros_interfaces.msg import AutoStartEnabled
 
 class AutomationManager:
     AUTOMATION_DIR = "/mnt/nepi_storage/automation_scripts"
-    SCRIPT_STOP_TIMEOUT_S = 5.0
+    DEFAULT_SCRIPT_STOP_TIMEOUT_S = 10.0
     SCRIPT_LOG_PATH = "/mnt/nepi_storage/logs/automation_script_logs"
 
     def __init__(self):
@@ -70,6 +68,8 @@ class AutomationManager:
             self.SCRIPT_LOG_PATH = system_storage_folder_query('logs/automation_script_logs').folder_path
         except Exception as e:
             rospy.logwarn("Failed to obtain system automation_scripts folder... falling back to " + self.AUTOMATION_DIR)
+
+        self.script_stop_timeout_s = rospy.get_param('~script_stop_timeout_s', self.DEFAULT_SCRIPT_STOP_TIMEOUT_S)
 
         self.save_cfg_if = SaveCfgIF(updateParamsCallback=self.setCurrentSettingsAsDefault, paramsModifiedCallback=self.updateFromParamServer)
 
@@ -184,6 +184,7 @@ class AutomationManager:
 
     def setCurrentSettingsAsDefault(self):
         rospy.set_param('~script_configs', self.script_configs)
+        rospy.set_param('~script_stop_timeout_s', self.script_stop_timeout_s)
         
     def get_scripts(self):
         """
@@ -315,7 +316,7 @@ class AutomationManager:
             retval = False
             try:
                 process.terminate()
-                process.wait(timeout=self.SCRIPT_STOP_TIMEOUT_S)
+                process.wait(timeout=self.script_stop_timeout_s)
                 self.script_counters[req.script]['cumulative_run_time'] += (rospy.Time.now() - rospy.Time.from_sec(self.processes[req.script]['start_time'])).to_sec()
                 self.processes[req.script]['logfile'].close()
                 del self.processes[req.script]
@@ -327,7 +328,7 @@ class AutomationManager:
                 rospy.logwarn("%s: error stopping (%s) with SIGTERM... now trying SIGKILL" % (req.script, str(e)))
                 process.kill()
                 try:
-                    process.wait(timeout=self.SCRIPT_STOP_TIMEOUT_S)
+                    process.wait(timeout=self.script_stop_timeout_s)
                     retval = True
                 except Exception as e2:
                     rospy.logerr("%s: failed to kill %s (%s)" % (req.script, str(e2)))
